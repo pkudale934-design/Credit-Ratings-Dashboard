@@ -1,5 +1,6 @@
 import re
 import time
+from urllib.parse import urlencode
 from datetime import date, datetime
 
 import requests
@@ -50,7 +51,13 @@ def make_link(company: str, date_text: str) -> str:
 def is_blocked(r) -> bool:
     head = (r.text or '')[:5000].lower()
     return (r.status_code in (403, 429, 503)
-            or 'just a moment' in head or 'cf-chl' in head or 'challenge-platform' in head)
+            or 'just a moment' in head or 'cf-chl' in head or 'challenge-platform' in head
+            or 'attention required' in head or 'you have been blocked' in head)
+
+
+class _Resp:
+    def __init__(self, status_code, text):
+        self.status_code, self.text = status_code, text
 
 
 class _ListParser(HTMLParser):
@@ -175,15 +182,13 @@ class AcuiteAdapter(Adapter):
                 row.get('Amount') or '', row.get('Rating') or '')
 
     # ---- network ---------------------------------------------------------
-    def _get(self, url, params=None, headers=None):
+    def _http_get(self, url, params=None, headers=None):
         last = None
         for attempt in range(3):
             try:
                 r = self.s.get(url, params=params, headers=headers, timeout=90)
                 if is_blocked(r):
-                    raise PermissionError(
-                        f'Acuité blocked the request (HTTP {r.status_code}, Cloudflare). '
-                        'No rows were added.')
+                    raise PermissionError(f'HTTP {r.status_code}, Cloudflare')
                 r.raise_for_status()
                 return r
             except PermissionError:
@@ -192,6 +197,49 @@ class AcuiteAdapter(Adapter):
                 last = e
                 time.sleep(2 * (attempt + 1))
         raise RuntimeError(f'Acuité request failed: {url}: {last}')
+
+    def _start_browser(self):
+        from playwright.sync_api import sync_playwright     # already installed by the workflow
+        self._pw = sync_playwright().start()
+        self._browser = self._pw.chromium.launch(headless=True)
+        ctx = self._browser.new_context(user_agent=HEADERS['User-Agent'], locale='en-GB',
+                                        viewport={'width': 1366, 'height': 900})
+        self._page = ctx.new_page()
+
+    def _stop_browser(self):
+        for obj, fn in ((getattr(self, '_browser', None), 'close'), (getattr(self, '_pw', None), 'stop')):
+            try:
+                if obj:
+                    getattr(obj, fn)()
+            except Exception:
+                pass
+        self._page = None
+
+    def _browser_get(self, url, params=None):
+        if params:
+            url += ('&' if '?' in url else '?') + urlencode(params)
+        self._page.goto(url, wait_until='domcontentloaded', timeout=60000)
+        html = ''
+        for _ in range(15):                  # give Cloudflare's check up to ~30 s to clear
+            html = self._page.content()
+            if not is_blocked(_Resp(200, html)):
+                return _Resp(200, html)
+            self._page.wait_for_timeout(2000)
+        raise PermissionError('browser also blocked by Cloudflare')
+
+    def _get(self, url, params=None, headers=None):
+        if getattr(self, '_page', None):
+            return self._browser_get(url, params)
+        try:
+            return self._http_get(url, params, headers)
+        except PermissionError as e:
+            print(f'WARNING: Acuité plain request blocked ({e}); retrying with a real browser')
+            self._start_browser()
+            try:
+                return self._browser_get(url, params)
+            except PermissionError:
+                raise PermissionError('Acuité blocked the request, including from a real browser '
+                                      '(Cloudflare). No rows were added.')
 
     def _instruments(self, item: dict) -> list:
         r = self._get(INSTR_URL,
@@ -230,6 +278,13 @@ class AcuiteAdapter(Adapter):
         known_links = {k[1] for k in known_keys if k and k[0] == self.name}
         self.s = requests.Session()
         self.s.headers.update(HEADERS)
+        self._page = None
+        try:
+            return self._fetch_pages(since, known_links)
+        finally:
+            self._stop_browser()
+
+    def _fetch_pages(self, since, known_links):
         self._get(LIST_URL)                  # cookies; also fails loudly if blocked
         out, seen = [], set()
         for page in range(1, MAX_PAGES + 1):
