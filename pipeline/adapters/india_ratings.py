@@ -18,7 +18,7 @@ SECTORS = ['corporates', 'financial institutions', 'infrastructure', 'public fin
 
 # How new rows store the link. 'key' = only the short key (e.g. cpf53zcolzk8aw3gwe9vu1b6),
 # 'url' = the full https://www.indiaratings.co.in/pressrelease/<key> address.
-LINK_STYLE = 'key'
+LINK_STYLE = 'url'
 # Also copy the key into the 'Source ID' column (harmless if the dashboard does not use it).
 ALSO_SOURCE_ID = True
 
