@@ -3,7 +3,7 @@ import time
 from datetime import date, datetime
 
 import requests
-from bs4 import BeautifulSoup          # needs beautifulsoup4 in requirements
+from html.parser import HTMLParser     # standard library: no extra package needed
 
 from .base import Adapter
 
@@ -53,36 +53,116 @@ def is_blocked(r) -> bool:
             or 'just a moment' in head or 'cf-chl' in head or 'challenge-platform' in head)
 
 
+class _ListParser(HTMLParser):
+    """Rows of a liveratings page: <tr id=..> with th.td-date and td.td-company a."""
+    def __init__(self):
+        super().__init__()
+        self.rows, self.row = [], None
+        self.in_date = self.in_td_company = self.in_a = False
+
+    @staticmethod
+    def _cls(attrs):
+        return (dict(attrs).get('class') or '').split()
+
+    def handle_starttag(self, tag, attrs):
+        d = dict(attrs)
+        cls = self._cls(attrs)
+        if tag == 'tr' and d.get('id'):
+            self.row = {'id': d['id'], 'date': '', 'company': '', 'city': None,
+                        'code': None, 'master': None}
+        elif self.row is None:
+            return
+        elif tag == 'th' and 'td-date' in cls:
+            self.in_date = True
+        elif tag == 'td' and 'td-company' in cls:
+            self.in_td_company = True
+        elif tag == 'a':
+            if 'instrument-link' in cls:
+                self.row['code'] = d.get('data-company')
+                self.row['master'] = d.get('data-master')
+            if self.in_td_company and not self.row['company']:
+                self.in_a = True
+                self.row['city'] = d.get('title')
+                if self.row['code'] is None:
+                    self.row['code'] = d.get('data-company')
+                    self.row['master'] = d.get('data-master')
+
+    def handle_endtag(self, tag):
+        if self.row is None:
+            return
+        if tag == 'th':
+            self.in_date = False
+        elif tag == 'a':
+            self.in_a = False
+        elif tag == 'td':
+            self.in_td_company = False
+        elif tag == 'tr':
+            if self.row['date'] and self.row['company']:
+                self.rows.append(self.row)
+            self.row = None
+
+    def handle_data(self, data):
+        if self.row is None:
+            return
+        if self.in_date:
+            self.row['date'] += data
+        elif self.in_a:
+            self.row['company'] += data
+
+
+class _InstrParser(HTMLParser):
+    """Cells of table.instrument-table tbody rows."""
+    def __init__(self):
+        super().__init__()
+        self.rows, self.cells = [], None
+        self.in_table = self.in_td = False
+        self.text = ''
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'table' and 'instrument-table' in (dict(attrs).get('class') or ''):
+            self.in_table = True
+        elif self.in_table and tag == 'tr':
+            self.cells = []
+        elif self.in_table and tag == 'td' and self.cells is not None:
+            self.in_td, self.text = True, ''
+
+    def handle_endtag(self, tag):
+        if tag == 'td' and self.in_td:
+            self.cells.append(_clean(self.text))
+            self.in_td = False
+        elif tag == 'tr' and self.cells is not None:
+            if self.cells:
+                self.rows.append(self.cells)
+            self.cells = None
+        elif tag == 'table':
+            self.in_table = False
+
+    def handle_data(self, data):
+        if self.in_td:
+            self.text += data
+
+
 def parse_list(html: str) -> list:
     """Rows of one liveratings page -> [{'company','city','date_text','date','company_code','master_id'}]"""
-    soup = BeautifulSoup(html, 'html.parser')
-    out = []
-    for tr in soup.select('tr[id]'):
-        th = tr.select_one('th.td-date')
-        a = tr.select_one('td.td-company a')
-        if not th or not a:
-            continue
-        link_el = tr.select_one('a.instrument-link') or a
-        d = parse_list_date(th.get_text())
-        out.append({'company': _clean(a.get_text()), 'city': a.get('title'),
-                    'date_text': _clean(th.get_text()), 'date': d,
-                    'company_code': link_el.get('data-company'),
-                    'master_id': link_el.get('data-master') or tr.get('id')})
-    return out
+    p = _ListParser()
+    p.feed(html or '')
+    return [{'company': _clean(r['company']), 'city': r['city'],
+             'date_text': _clean(r['date']), 'date': parse_list_date(r['date']),
+             'company_code': r['code'], 'master_id': r['master'] or r['id']}
+            for r in p.rows]
 
 
 def parse_instruments(html: str) -> list:
     """Rows of the 'Instruments' modal table."""
-    soup = BeautifulSoup(html, 'html.parser')
+    p = _InstrParser()
+    p.feed(html or '')
     out = []
-    for tr in soup.select('table.instrument-table tbody tr'):
-        td = [_clean(c.get_text()) for c in tr.find_all('td')]
+    for td in p.rows:
         if len(td) < 8:
             continue
         # Sr, Date, ISIN, Instrument, Bank, Term, Quantum, Rating, Status, Listed, Regulator
         out.append({'instrument': td[3], 'bank': td[4], 'term': td[5], 'quantum': td[6],
-                    'rating': td[7], 'status': td[8] if len(td) > 8 else '',
-                    'isin': td[2]})
+                    'rating': td[7], 'status': td[8] if len(td) > 8 else '', 'isin': td[2]})
     return out
 
 
