@@ -2,6 +2,7 @@ import html as htmllib
 import re
 import time
 from datetime import date, datetime
+from urllib.parse import quote
 
 import requests
 
@@ -207,8 +208,10 @@ class IndiaRatingsAdapter(Adapter):
         return out
 
     def _detail_table(self, item: dict):
+        # The referer goes into an HTTP header, which cannot hold characters such as an en dash,
+        # so the issuer part is percent-encoded.
         data = self._get_json(DETAIL_URL, {'pressReleaseId': item['key'], 'issuerconcat': item['concat']},
-                              f"{BASE}/pressrelease/{item['key']}/{item['concat']}")
+                              f"{BASE}/pressrelease/{item['key']}/{quote(item['concat'], safe='')}")
         return (data[0] or {}).get('currentRatings') if data else None
 
     # ---- row building ----------------------------------------------------
@@ -220,7 +223,11 @@ class IndiaRatingsAdapter(Adapter):
 
     def _rows_for(self, item: dict) -> list:
         base = self._base(item)
-        parsed = parse_current_ratings(self._detail_table(item))
+        try:
+            parsed = parse_current_ratings(self._detail_table(item))
+        except Exception as e:
+            print(f"WARNING: detail request failed for {item['key']} ({item['company']}): {e}")
+            parsed = []
         verb = _title_verb(item['title'])
         if not parsed:
             print(f"WARNING: could not read the rating table for {item['key']} ({item['company']}); "
