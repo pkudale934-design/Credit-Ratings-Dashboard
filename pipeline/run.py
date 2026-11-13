@@ -22,6 +22,13 @@ def main(argv=None):
     history = json.load(open(log_path)) if os.path.exists(log_path) else []
 
     html, rows = read_rows(a.html)
+    # repair: India Ratings links stored as a bare key -> full address (safe to run every time)
+    import re as _re
+    for _r in rows:
+        if _r.get('Rating Agency') == 'India Ratings':
+            _l = (_r.get('Link') or '').strip()
+            if _re.fullmatch(r'[A-Za-z0-9]{24}', _l):
+                _r['Link'] = 'https://www.indiaratings.co.in/pressrelease/' + _l
     problems, report = [], {}
     for ad in ALL:
         if a.only and ad.name != a.only:
