@@ -48,13 +48,22 @@ def main(argv=None):
             traceback.print_exc()
             report[ad.name] = {'status': 'error', 'error': str(e)[:300]}
             problems.append(f'{ad.name}: error {e}')
-
-    # stale-source alert: enabled adapter added nothing for several runs in a row
+            
+# stale-source alert: nothing added today AND nothing added on the previous days (by calendar day, not by run)
+    today = datetime.now(timezone.utc).date().isoformat()
+    day_added = {}
+    for h in history:
+        d = h['ts'][:10]
+        if d == today:
+            continue
+        for n, r in h['agencies'].items():
+            day_added.setdefault(n, {})
+            day_added[n][d] = day_added[n].get(d, 0) + (r.get('added') or 0)
     for name, rep in report.items():
         if rep['status'] == 'ok' and rep['added'] == 0:
-            past = [h['agencies'].get(name, {}) for h in history[-(ALERT_ZERO_RUNS - 1):]]
-            if len(past) == ALERT_ZERO_RUNS - 1 and all(p.get('added') == 0 for p in past):
-                problems.append(f'{name}: no new rows for {ALERT_ZERO_RUNS} runs (site layout change?)')
+            days = sorted(day_added.get(name, {}))[-(ALERT_ZERO_RUNS - 1):]
+            if len(days) == ALERT_ZERO_RUNS - 1 and all(day_added[name][d] == 0 for d in days):
+                problems.append(f'{name}: no new rows for {ALERT_ZERO_RUNS} days (site layout change?)')
 
     as_of = max((r['Date'] for r in rows if r['Date']), default=None)
     write_html(html, rows, a.html, as_of=as_of)
