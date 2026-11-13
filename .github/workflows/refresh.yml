@@ -13,11 +13,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Get the last published dashboard (branch "pages"), if any
-        run: pip install requests playwright pypdf && playwright install --with-deps chromium
+        run: |
           if git fetch origin pages:pages 2>/dev/null; then git worktree add site pages; else mkdir site; fi
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
-      - run: pip install requests playwright && playwright install --with-deps chromium
+      - run: pip install requests playwright pypdf && playwright install --with-deps chromium
       - name: Update data
         run: python -m pipeline.run --html site/index.html --seed seed/index.html
       - name: Publish (single-commit branch, so the repo never grows)
