@@ -1,0 +1,29 @@
+name: Refresh ratings dashboard
+on:
+  schedule:
+    - cron: '30 14 * * 1-6'   # 20:00 IST, Mon-Sat (agencies publish during the day)
+  workflow_dispatch: {}
+permissions:
+  contents: write
+concurrency: refresh
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get the last published dashboard (branch "pages"), if any
+        run: |
+          if git fetch origin pages:pages 2>/dev/null; then git worktree add site pages; else mkdir site; fi
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install requests playwright && playwright install --with-deps chromium
+      - name: Update data
+        run: python -m pipeline.run --html site/index.html --seed seed/index.html
+      - name: Publish (single-commit branch, so the repo never grows)
+        if: always()
+        run: |
+          cd site && rm -rf .git
+          git init -q -b pages && git config user.name "refresh-bot" && git config user.email "bot@users.noreply.github.com"
+          git add -A && git commit -qm "Data refresh $(date -u +%F)"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" pages
