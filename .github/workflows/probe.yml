@@ -1,16 +1,23 @@
-name: Probe Acuite access
+name: Probe Brickwork access
 on:
   workflow_dispatch: {}
 jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Try the Acuite addresses from GitHub's servers
+      - name: Try the Brickwork addresses from GitHub's servers
         run: |
           UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36'
           echo "Runner country: $(curl -s --max-time 20 https://ipinfo.io/country)"
-          for u in "https://www.acuite.in/" "https://acuite.in/" "https://connect.acuite.in/" "https://connect.acuite.in/liveratings"; do
-            code=$(curl -s -L -A "$UA" -o /tmp/out.html -w '%{http_code}' --max-time 60 "$u")
-            title=$(grep -o '<title>[^<]*' /tmp/out.html | head -1)
+          for u in \
+            "https://www.brickworkratings.com/PressRelease.aspx" \
+            "https://www.brickworkratings.com/creditratings.aspx" \
+            "https://www.brickworkratings.com/Admin/PressRelease/Patanjali-Ayurved-12Nov2026.pdf" \
+            "https://bcrisp.in///BLRHTML/HTMLDocument/ViewRatingRationaleINCNew?id=222798" \
+            "https://bcrisp.in///BLRHTML/HTMLDocument/ViewRatingRationaleInitial?id=222401"; do
+            code=$(curl -s -L -A "$UA" -o /tmp/out.bin -w '%{http_code} %{content_type} %{size_download} bytes' --max-time 60 "$u")
+            title=$(grep -a -o '<title>[^<]*' /tmp/out.bin | head -1)
             echo "$u -> HTTP $code $title"
           done
+          echo "--- Number of items in the Latest Rationales list on PressRelease.aspx:"
+          curl -s -L -A "$UA" --max-time 60 https://www.brickworkratings.com/PressRelease.aspx | grep -c 'rptPressRelease_hlPressRelease_'
