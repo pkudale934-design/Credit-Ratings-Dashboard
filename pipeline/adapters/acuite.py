@@ -11,7 +11,8 @@ from .base import Adapter
 BASE = 'https://connect.acuite.in'
 LIST_URL = BASE + '/liveratings'
 INSTR_URL = BASE + '/latest-intrument'      # (sic) the site's own spelling
-LINK_FMT = BASE + '/fcompany-details/{company}/{date}'
+# The dashboard adds this prefix itself and stores only "<COMPANY_NAME>/<date>", e.g. ATUL_PUMPS_PRIVATE_LIMITED/4th_Nov_26
+LINK_PREFIX = BASE + '/fcompany-details/'
 MAX_PAGES = 30
 PAUSE_SECONDS = 0.5
 RATING_PREFIX = 'ACUITE '     # CHECK: how existing Acuité ratings are stored in the dashboard
@@ -43,9 +44,14 @@ def parse_list_date(text: str):
 
 
 def make_link(company: str, date_text: str) -> str:
-    """Matches stored rows: .../fcompany-details/ATUL_PUMPS_PRIVATE_LIMITED/4th_Nov_26"""
-    return LINK_FMT.format(company=re.sub(r'\s+', '_', company.strip()),
-                           date=re.sub(r'\s+', '_', date_text.strip()))
+    """The part the dashboard stores: ATUL_PUMPS_PRIVATE_LIMITED/4th_Nov_26"""
+    return '{}/{}'.format(re.sub(r'\s+', '_', company.strip()), re.sub(r'\s+', '_', date_text.strip()))
+
+
+def _frag(link) -> str:
+    """Stored part of a link, whether the row holds a full URL or only the fragment."""
+    s = (link or '').strip()
+    return s[len(LINK_PREFIX):] if s.startswith(LINK_PREFIX) else s
 
 
 def is_blocked(r) -> bool:
@@ -178,7 +184,7 @@ class AcuiteAdapter(Adapter):
     enabled = True
 
     def key(self, row: dict) -> tuple:
-        return (self.name, row.get('Link') or '', row.get('Instrument / Facility') or '',
+        return (self.name, _frag(row.get('Link')), row.get('Instrument / Facility') or '',
                 row.get('Amount') or '', row.get('Rating') or '')
 
     # ---- network ---------------------------------------------------------
@@ -188,7 +194,8 @@ class AcuiteAdapter(Adapter):
             try:
                 r = self.s.get(url, params=params, headers=headers, timeout=90)
                 if is_blocked(r):
-                    raise PermissionError(f'HTTP {r.status_code}, Cloudflare')
+                    snippet = _clean(r.text)[:200]
+                    raise PermissionError(f'HTTP {r.status_code}, Cloudflare. Page starts: {snippet}')
                 r.raise_for_status()
                 return r
             except PermissionError:
@@ -201,7 +208,8 @@ class AcuiteAdapter(Adapter):
     def _start_browser(self):
         from playwright.sync_api import sync_playwright     # already installed by the workflow
         self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(headless=True)
+        self._browser = self._pw.chromium.launch(
+            headless=True, args=['--disable-blink-features=AutomationControlled'])
         ctx = self._browser.new_context(user_agent=HEADERS['User-Agent'], locale='en-GB',
                                         viewport={'width': 1366, 'height': 900})
         self._page = ctx.new_page()
@@ -225,7 +233,7 @@ class AcuiteAdapter(Adapter):
             if not is_blocked(_Resp(200, html)):
                 return _Resp(200, html)
             self._page.wait_for_timeout(2000)
-        raise PermissionError('browser also blocked by Cloudflare')
+        raise PermissionError('browser also blocked by Cloudflare. Page starts: ' + _clean(html)[:200])
 
     def _get(self, url, params=None, headers=None):
         if getattr(self, '_page', None):
@@ -237,9 +245,9 @@ class AcuiteAdapter(Adapter):
             self._start_browser()
             try:
                 return self._browser_get(url, params)
-            except PermissionError:
+            except PermissionError as e2:
                 raise PermissionError('Acuité blocked the request, including from a real browser '
-                                      '(Cloudflare). No rows were added.')
+                                      f'(Cloudflare). No rows were added. Detail: {e2}')
 
     def _instruments(self, item: dict) -> list:
         r = self._get(INSTR_URL,
@@ -288,10 +296,12 @@ class AcuiteAdapter(Adapter):
         self._get(LIST_URL)                  # cookies; also fails loudly if blocked
         out, seen = [], set()
         for page in range(1, MAX_PAGES + 1):
-            items = parse_list(self._get(LIST_URL, params={'page': page}).text)
+            resp = self._get(LIST_URL, params={'page': page})
+            items = parse_list(resp.text)
             if not items:
                 if page == 1:
-                    print('WARNING: Acuité list page 1 had no rows (layout changed?)')
+                    print('WARNING: Acuité list page 1 had no rows (layout changed?). Page starts: '
+                          + _clean(resp.text)[:300])
                 break
             new_on_page, reached_old = 0, False
             for it in items:
