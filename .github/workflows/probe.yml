@@ -1,0 +1,16 @@
+name: Probe Acuite access
+on:
+  workflow_dispatch: {}
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Try the Acuite addresses from GitHub's servers
+        run: |
+          UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36'
+          echo "Runner country: $(curl -s --max-time 20 https://ipinfo.io/country)"
+          for u in "https://www.acuite.in/" "https://acuite.in/" "https://connect.acuite.in/" "https://connect.acuite.in/liveratings"; do
+            code=$(curl -s -L -A "$UA" -o /tmp/out.html -w '%{http_code}' --max-time 60 "$u")
+            title=$(grep -o '<title>[^<]*' /tmp/out.html | head -1)
+            echo "$u -> HTTP $code $title"
+          done
