@@ -181,7 +181,7 @@ def parse_instruments(html: str) -> list:
 
 class AcuiteAdapter(Adapter):
     name = 'Acuité'
-    enabled = True
+    enabled = False
 
     def key(self, row: dict) -> tuple:
         return (self.name, _frag(row.get('Link')), row.get('Instrument / Facility') or '',
